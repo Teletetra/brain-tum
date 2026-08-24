@@ -1,0 +1,52 @@
+seed: 42
+
+data:
+  root: data/raw
+  modalities: [T1, T1ce, T2, FLAIR]
+  sequence_mode: 2.5d
+  label_mapping: {0: 0, 1: 1, 2: 2, 4: 3}
+  val_ratio: 0.15
+  test_ratio: 0.15
+
+model:
+  input_channels: 8
+  num_classes: 4
+  base_channels: 32
+  vit_dim: 256
+  vit_heads: 8
+  vit_depth: 6
+  dropout: 0.1
+  edge_branch: true
+  h_csaf: true
+  deep_supervision: true
+
+training:
+  epochs: 70
+  batch_size: 2
+  num_workers: 4
+  mixed_precision: true
+  gradient_checkpointing: true
+  gradient_clip_norm: 1.0
+  checkpoint_dir: artifacts/checkpoints
+
+optimizer:
+  name: muon
+  lr: 0.0003
+  weight_decay: 0.01
+  warmup_epochs: 5
+  scheduler: cosine
+
+loss:
+  main_weight: 1.0
+  aux_half_weight: 0.4
+  aux_quarter_weight: 0.2
+
+augmentation:
+  flip: true
+  rotation_degrees: 15
+  elastic: true
+  gamma: true
+  cutmix_probability: 0.2
+
+evaluation:
+  metrics: [dice, iou, hd95]
