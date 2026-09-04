@@ -1,148 +1,185 @@
-# Brain Tumor Segmentation with CNN-ViT H-CSAF
+# Brain Tumor Segmentation with CNN–ViT H-CSAF
 
-A research-oriented MRI brain tumor segmentation framework for the BraTS 2021 dataset, combining local convolutional features with global transformer context, edge-aware learning, hierarchical cross-scale attention fusion, and deep supervision.
+[![CI](https://github.com/Teletetra/brain-tum/actions/workflows/ci.yml/badge.svg)](https://github.com/Teletetra/brain-tum/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c)
+![License](https://img.shields.io/badge/License-MIT-green)
 
-> **Research project:** hybrid CNN + Vision Transformer architecture for multi-class brain tumor segmentation from multi-modal MRI.
+A research-oriented **multi-modal MRI brain tumor segmentation** framework built around a hybrid **CNN + Vision Transformer** encoder, **Hierarchical Cross-Scale Attention Fusion (H-CSAF)**, an edge-aware branch, and deep supervision.
 
-## Overview
+> **Status:** Research implementation / reproducible training scaffold. Benchmark metrics are intentionally not published until a verified BraTS training run is completed.
 
-Brain tumor segmentation requires both fine anatomical detail and global contextual understanding. This project addresses that challenge with a hybrid encoder-decoder design:
+## Why this project
 
-- **Lightweight CNN encoder** for local texture and anatomical detail
-- **Vision Transformer encoder** for long-range spatial dependencies
-- **FlashAttention / scaled dot-product attention** for efficient transformer attention
-- **Parallel edge branch** to preserve tumor boundaries
-- **H-CSAF** (Hierarchical Cross-Scale Attention Fusion) to fuse CNN and ViT representations at multiple scales
-- **U-Net-style decoder** with attention gates and skip connections
-- **Deep supervision** with auxiliary prediction heads at multiple decoder resolutions
-- **2.5D MRI processing** to increase contextual information while remaining feasible on a single 12 GB GPU
+Brain tumor segmentation requires both **fine-grained anatomical detail** and **global contextual reasoning**. Convolutional networks are strong at local structure, while transformers provide larger receptive fields and long-range spatial interactions.
+
+This project combines both representations in a single encoder-decoder pipeline and treats boundary quality as a first-class objective.
+
+### Core design
+
+| Component | Purpose |
+|---|---|
+| Lightweight CNN encoder | Local texture, edges, and anatomical detail |
+| Vision Transformer encoder | Global spatial context and long-range dependencies |
+| H-CSAF | Cross-scale fusion between CNN and transformer features |
+| Edge branch | Explicit boundary representation for irregular tumor borders |
+| Attention U-Net decoder | High-resolution reconstruction with gated skip fusion |
+| Deep supervision | Auxiliary losses at intermediate decoder stages |
+| 2.5D input strategy | Adds neighboring-slice context without full 3D memory cost |
 
 ## Architecture
 
 ```text
-Multi-modal MRI
-   |
-   | 2.5D slice construction
-   v
-+---------------------+       +----------------------+
-| Lightweight CNN     |       | Vision Transformer   |
-| Encoder             |       | Encoder              |
-| local detail        |       | global context       |
-+----------+----------+       +----------+-----------+
-           |                             |
-           | multi-scale features        |
-           +-------------+---------------+
-                         v
-              +----------------------+
-              | H-CSAF Fusion        |
-              | Cross-scale attention|
-              | learnable fusion     |
-              +----------+-----------+
-                         |
-              +----------v-----------+
-              | Edge Detection Branch|
-              | boundary-aware signal |
-              +----------+-----------+
-                         |
-                         v
-              +----------------------+
-              | Attention U-Decoder  |
-              | skip connections      |
-              +----+------+-----+----+
-                   |      |     |
-                 Aux 1  Aux 2 Main
-                   |      |     |
-                   +------v-----+
-                          |
-                    Final logits
-                          |
-                     Segmentation
+                     Multi-modal MRI
+                  T1 / T1ce / T2 / FLAIR
+                            │
+                    2.5D slice formation
+                            │
+             ┌──────────────┴──────────────┐
+             │                             │
+             ▼                             ▼
+      ┌───────────────┐             ┌─────────────────┐
+      │ CNN Encoder   │             │ ViT Encoder     │
+      │ local detail  │             │ global context  │
+      └───────┬───────┘             └────────┬────────┘
+              │                              │
+              └──────────────┬───────────────┘
+                             ▼
+                  ┌──────────────────────┐
+                  │ H-CSAF Fusion        │
+                  │ cross-scale attention│
+                  └──────────┬───────────┘
+                             │
+                  ┌──────────┴───────────┐
+                  │                      │
+                  ▼                      ▼
+          ┌──────────────┐       ┌───────────────┐
+          │ Edge Branch  │       │ Feature Path  │
+          │ boundaries   │       │ fused scales  │
+          └──────┬───────┘       └───────┬───────┘
+                 └──────────┬────────────┘
+                            ▼
+                   ┌──────────────────┐
+                   │ Attention Decoder│
+                   │ + skip connections│
+                   └────────┬─────────┘
+                            │
+             ┌──────────────┼──────────────┐
+             ▼              ▼              ▼
+          Aux head       Aux head       Main head
+             │              │              │
+             └──────────────┴──────────────┘
+                            ▼
+                    Tumor segmentation
 ```
 
-## H-CSAF
+## H-CSAF: cross-scale fusion
 
-The **Hierarchical Cross-Scale Attention Fusion** module projects CNN and ViT features into a shared latent space and performs cross-attention at corresponding scales.
+**Hierarchical Cross-Scale Attention Fusion** is the central fusion block. At each selected feature scale, CNN and transformer representations are projected into a compatible embedding space and exchanged through cross-attention before being combined.
 
 ```text
-CNN feature F_i  ----> Query Q_i ----+
-                                     |
-ViT feature T_i ----> Keys / Values -+--> Cross-Attention --> fused feature
+CNN feature ──► Query ────────────────┐
+                                      ├─► Cross Attention ─► fused scale
+ViT feature ──► Key / Value ─────────┘
 ```
 
-The module uses learnable fusion weights rather than relying only on direct concatenation, allowing the network to adapt the contribution of local and global representations at each scale.
+The design is intended to preserve CNN locality while injecting transformer context without simply concatenating feature tensors.
 
-## Edge-aware segmentation
+## Edge-aware learning
 
-A parallel edge branch predicts a boundary probability map from the finest encoder feature. The edge representation is fused with the decoder input to improve tumor boundary localization, particularly around irregular or low-contrast regions.
+Tumor boundaries can be irregular and low-contrast. A parallel edge branch predicts a boundary representation that is injected into the decoder, encouraging sharper segmentation transitions.
+
+The edge branch is complementary to semantic segmentation rather than replacing it: the main segmentation head remains responsible for the final multi-class prediction.
 
 ## Deep supervision
 
-Auxiliary segmentation heads are attached to intermediate decoder stages. The total objective combines the main segmentation loss with auxiliary losses:
+Intermediate decoder outputs are supervised alongside the final prediction. The training objective is represented as:
 
-`L_total = w_main L_main + w_1 L_aux1 + w_2 L_aux2`
+```text
+L_total = w_main · L_main + w_aux1 · L_aux1 + w_aux2 · L_aux2
+```
 
-This encourages useful gradient flow throughout the decoder rather than depending exclusively on the final prediction head.
+This encourages useful representations at multiple decoder resolutions and can improve gradient flow during training.
 
-## Dataset
+## Dataset: BraTS 2021
 
-The primary target is **BraTS 2021**, using multi-modal brain MRI volumes including T1, T1ce, T2, and FLAIR. The dataset is intentionally not committed to the repository. Configure its location in `configs/default.yaml`.
+The intended benchmark is **BraTS 2021** with multi-modal MRI volumes including:
 
-## Preprocessing
+- T1
+- T1ce
+- T2
+- FLAIR
 
-The pipeline is designed around common MRI preprocessing steps:
+The dataset is **not committed to Git**. Configure its local path in `configs/default.yaml`.
 
-1. Verify modality availability and metadata
-2. Align modalities using a common spatial reference
-3. Skull-stripping / background handling where required
-4. Bias-field correction where included by the preprocessing recipe
-5. Intensity normalization
-6. 2.5D slice construction
-7. Label remapping for training classes
-8. Subject-level train / validation / test split to prevent leakage
+For training, BraTS labels can be remapped from `{0, 1, 2, 4}` to contiguous class IDs `{0, 1, 2, 3}`.
 
-The research setup supports remapping BraTS labels `{0,1,2,4}` to contiguous training classes `{0,1,2,3}`.
+## Preprocessing pipeline
+
+The preprocessing design keeps operations subject-aware and avoids leakage between train and validation/test subjects:
+
+```text
+Raw NIfTI volumes
+      │
+      ├─ modality / metadata validation
+      ├─ spatial alignment checks
+      ├─ background / skull handling
+      ├─ intensity normalization
+      ├─ label remapping
+      ├─ subject-level split
+      └─ 2.5D sample generation
+                │
+                ▼
+            Augmentation
+                │
+                ▼
+             Training
+```
+
+Typical augmentation hooks include flips, rotations, elastic deformation, intensity/gamma variation, and configurable CutMix.
 
 ## Training pipeline
 
 ```text
-Raw NIfTI volumes
-      |
-      v
-Subject-level preprocessing
-      |
-      v
-2.5D sample generation
-      |
-      v
-Augmentation
-  - flips
-  - rotations
-  - elastic deformation
-  - gamma shifts
-  - CutMix (configurable)
-      |
-      v
-Hybrid CNN + ViT encoder
-      |
-      v
-H-CSAF + edge-aware fusion
-      |
-      v
-Attention U-decoder + deep supervision
-      |
-      v
-Segmentation losses
-      |
-      v
-Checkpoint + metrics
-      |
-      v
-Validation / test inference
+┌───────────────┐
+│ BraTS volumes │
+└───────┬───────┘
+        ▼
+┌─────────────────────┐
+│ Preprocess + split  │
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐
+│ 2.5D data loader     │
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐
+│ CNN + ViT encoders  │
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐
+│ H-CSAF + edge path  │
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐
+│ Attention decoder   │
+│ + deep supervision  │
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐
+│ Loss / backprop      │
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐
+│ Checkpoint + metrics│
+└─────────┬───────────┘
+          ▼
+     Validation
 ```
 
-## Training configuration
+## Reference configuration
 
-The reference recipe targets an **NVIDIA RTX 3060 12 GB** class GPU and can be adapted through YAML configuration.
+The default configuration is designed for experimentation on a **12 GB consumer GPU class** system and exposes memory/performance controls through YAML.
 
 ```yaml
 seed: 42
@@ -178,27 +215,32 @@ augmentation:
   cutmix_probability: 0.2
 ```
 
-## Loss and evaluation
+> Configuration values are starting points for experimentation, not claimed benchmark-optimal hyperparameters.
 
-Primary metrics:
+## Evaluation
+
+The evaluation layer is designed to report clinically relevant segmentation metrics at both class and aggregate levels:
 
 - **Dice Similarity Coefficient (DSC)**
 - **Intersection over Union (IoU)**
 - **HD95** (95th percentile Hausdorff distance)
 
-The evaluation pipeline reports per-class and aggregate metrics and can export prediction masks for qualitative analysis.
+Prediction masks can also be exported for qualitative visualization and error analysis.
 
-## Project structure
+## Repository structure
 
 ```text
-.
+brain-tum/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
 ├── configs/
 │   ├── default.yaml
 │   └── experiments/
 ├── data/
-│   ├── raw/.gitkeep
-│   ├── interim/.gitkeep
-│   └── processed/.gitkeep
+│   ├── raw/
+│   ├── interim/
+│   └── processed/
 ├── docs/
 │   ├── architecture.md
 │   └── training.md
@@ -211,7 +253,6 @@ The evaluation pipeline reports per-class and aggregate metrics and can export p
 │   └── infer.py
 ├── src/
 │   └── brain_tumor_seg/
-│       ├── __init__.py
 │       ├── config.py
 │       ├── data/
 │       ├── models/
@@ -226,7 +267,6 @@ The evaluation pipeline reports per-class and aggregate metrics and can export p
 │       ├── evaluation/
 │       └── cli.py
 ├── tests/
-├── .github/workflows/ci.yml
 ├── pyproject.toml
 ├── Makefile
 ├── LICENSE
@@ -235,37 +275,90 @@ The evaluation pipeline reports per-class and aggregate metrics and can export p
 
 ## Quick start
 
+### 1. Environment
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
-python scripts/prepare_data.py --config configs/default.yaml
-python scripts/train.py --config configs/default.yaml
-python scripts/evaluate.py --checkpoint artifacts/checkpoints/best.pt --config configs/default.yaml
 ```
+
+### 2. Prepare BraTS data
+
+```bash
+python scripts/prepare_data.py --config configs/default.yaml
+```
+
+### 3. Train
+
+```bash
+python scripts/train.py --config configs/default.yaml
+```
+
+### 4. Evaluate a checkpoint
+
+```bash
+python scripts/evaluate.py \
+  --checkpoint artifacts/checkpoints/best.pt \
+  --config configs/default.yaml
+```
+
+### 5. Run inference
+
+```bash
+python scripts/infer.py \
+  --checkpoint artifacts/checkpoints/best.pt \
+  --input data/processed/example_case \
+  --output artifacts/predictions
+```
+
+## Reproducibility
+
+Each experiment should retain:
+
+- Git commit SHA
+- Dataset/version identifier
+- YAML configuration
+- Random seed
+- Preprocessing configuration
+- Model architecture configuration
+- Training history
+- Best checkpoint
+- Validation/test metrics
+
+Generated datasets, checkpoints, predictions, and large experiment artifacts should stay outside source control.
 
 ## Engineering practices
 
-- Subject-level data separation
-- Reproducible YAML configuration
-- Mixed precision training
-- Gradient checkpointing for memory efficiency
-- Checkpoint management and best-model tracking
+- Subject-level train/validation/test separation
+- Configuration-driven experiments
+- Mixed-precision training
+- Gradient checkpointing for memory-constrained hardware
+- Gradient clipping and checkpoint recovery
 - Modular components for ablation studies
-- Unit tests for critical tensor paths
+- Unit tests around critical tensor paths
 - GitHub Actions CI
-- Experiment artifacts separated from source code
+- Clear separation between source code and experiment artifacts
 
 ## Research roadmap
 
-- Convolutional Variational Autoencoder / uncertainty baselines
-- Stronger pretrained initialization
-- Multi-scale deformable attention
-- Test-time augmentation
-- MONAI-based benchmark comparison
-- Cross-dataset generalization
-- Inference profiling and optimization
+- Verify full BraTS training/evaluation benchmark
+- Add systematic CNN-only / ViT-only / fusion ablations
+- Compare Muon and AdamW optimization recipes
+- Add MONAI benchmark implementations
+- Add test-time augmentation and uncertainty estimation
+- Profile inference latency and GPU memory
+- Study cross-dataset generalization
+- Package inference as a reproducible service
+
+## Responsible use
+
+This repository is a research and engineering project. It is **not a clinical diagnostic system** and should not be used to make patient-care decisions without appropriate clinical validation, regulatory review, and expert oversight.
 
 ## License
 
-MIT License. See `LICENSE` for details.
+MIT License. See [LICENSE](LICENSE) for details.
+
+## Author
+
+**Teletetra** — research implementation and engineering work.
